@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Отчет по привлечению клиентов телеком-компании</title>
+  <!-- Подключение Papa Parse для парсинга CSV -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+  <!-- Подключение Chart.js для графиков -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <!-- Подключение Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div class="container mx-auto p-4">
+    <h1 class="text-3xl font-bold mb-4 text-center">Отчет по привлечению клиентов телеком-компании</h1>
+
+    <!-- Поле для загрузки файла -->
+    <div class="mb-4">
+      <input type="file" id="fileInput" accept=".csv" class="mb-2">
+      <div id="error" class="text-center p-2 text-red-500 hidden"></div>
+      <div id="loading" class="text-center p-2">Пожалуйста, выберите CSV-файл.</div>
+    </div>
+
+    <!-- Контейнер для отчета -->
+    <div id="report" class="hidden">
+      <!-- Ключевые выводы -->
+      <section class="mb-8">
+        <h2 class="text-2xl font-semibold mb-2">Ключевые выводы</h2>
+        <ul id="insights" class="list-disc pl-5"></ul>
+      </section>
+
+      <!-- Визуализации -->
+      <section class="mb-8">
+        <h2 class="text-2xl font-semibold mb-2">Визуализации</h2>
+
+        <div class="mb-6">
+          <h3 class="text-xl font-medium mb-2">Общий уровень оттока</h3>
+          <div class="bg-white p-4 rounded shadow">
+            <canvas id="churnRateChart" width="500" height="300"></canvas>
+          </div>
+        </div>
+
+        <div class="mb-6">
+          <h3 class="text-xl font-medium mb-2">Отток по штатам (Топ-5)</h3>
+          <div class="bg-white p-4 rounded shadow">
+            <canvas id="stateChurnChart" width="500" height="300"></canvas>
+          </div>
+        </div>
+
+        <div class="mb-6">
+          <h3 class="text-xl font-medium mb-2">Минуты звонков vs. Счета</h3>
+          <div class="bg-white p-4 rounded shadow">
+            <canvas id="usageVsChargeChart" width="500" height="300"></canvas>
+          </div>
+        </div>
+
+        <div class="mb-6">
+          <h3 class="text-xl font-medium mb-2">Обращения в поддержку vs. Отток</h3>
+          <div class="bg-white p-4 rounded shadow">
+            <canvas id="serviceCallsChart" width="500" height="300"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- Рекомендации -->
+      <section class="mb-8">
+        <h2 class="text-2xl font-semibold mb-2">Стратегические рекомендации</h2>
+        <ul id="recommendations" class="list-disc pl-5"></ul>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    // Элементы DOM
+    const fileInput = document.getElementById('fileInput');
+    const errorDiv = document.getElementById('error');
+    const loadingDiv = document.getElementById('loading');
+    const reportDiv = document.getElementById('report');
+    const insightsList = document.getElementById('insights');
+    const recommendationsList = document.getElementById('recommendations');
+
+    // Обработчик загрузки файла
+    fileInput.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      loadingDiv.classList.remove('hidden');
+      loadingDiv.textContent = 'Загрузка данных...';
+      errorDiv.classList.add('hidden');
+      reportDiv.classList.add('hidden');
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const rawData = e.target.result;
+          const parsed = Papa.parse(rawData, {
+            header: true,
+            skipEmptyLines: true,
+            transform: (value, header) => {
+              if (header === 'Churn') return value === 'True';
+              if (['Account length', 'Area code', 'Number vmail messages', 'Total day minutes', 'Total day calls', 'Total day charge', 'Total eve minutes', 'Total eve calls', 'Total eve charge', 'Total night minutes', 'Total night calls', 'Total night charge', 'Total intl minutes', 'Total intl calls', 'Total intl charge', 'Customer service calls'].includes(header)) {
+                return parseFloat(value) || 0;
+              }
+              if (['International plan', 'Voice mail plan'].includes(header)) {
+                return value === 'Yes';
+              }
+              return value.trim();
+            }
+          });
+
+          if (parsed.errors.length > 0) {
+            throw new Error('Ошибка при парсинге данных: ' + parsed.errors[0].message);
+          }
+
+          const data = parsed.data;
+          if (data.length === 0) {
+            throw new Error('Данные пусты');
+          }
+
+          // Анализ данных
+          const churnRate = (data.filter(d => d.Churn).length / data.length * 100).toFixed(1);
+          const stateChurn = data.reduce((acc, d) => {
+            acc[d.State] = acc[d.State] || { churn: 0, total: 0 };
+            acc[d.State].total += 1;
+            if (d.Churn) acc[d.State].churn += 1;
+            return acc;
+          }, {});
+          const stateChurnData = Object.entries(stateChurn)
+            .map(([state, { churn, total }]) => ({ state, churnRate: (churn / total * 100).toFixed(1) }))
+            .sort((a, b) => b.churnRate - a.churnRate)
+            .slice(0, 5);
+
+          const usageVsChargeData = data.map(d => ({
+            dayMinutes: d['Total day minutes'],
+            dayCharge: d['Total day charge'],
+            churn: d.Churn
+          }));
+
+          const serviceCallsChurn = data.reduce((acc, d) => {
+            const calls = d['Customer service calls'];
+            acc[calls] = acc[calls] || { churn: 0, total: 0 };
+            acc[calls].total += 1;
+            if (d.Churn) acc[calls].churn += 1;
+            return acc;
+          }, {});
+          const serviceCallsData = Object.entries(serviceCallsChurn)
+            .map(([calls, { churn, total }]) => ({
+              calls: parseInt(calls),
+              churnRate: (churn / total * 100).toFixed(1)
+            }))
+            .sort((a, b) => a.calls - b.calls);
+
+          const totalCharge = data.map(d => {
+            return (d['Total day charge'] || 0) + (d['Total eve charge'] || 0) + (d['Total night charge'] || 0) + (d['Total intl charge'] || 0);
+          });
+          const chargeThreshold = totalCharge.sort((a, b) => b - a)[Math.floor(totalCharge.length * 0.25)];
+          const lowChurnHighChargeState = stateChurnData.find(s => s.churnRate < 10 && data.find(d => d.State === s.state && (
+            (d['Total day charge'] || 0) + (d['Total eve charge'] || 0) + (d['Total night charge'] || 0) + (d['Total intl charge'] || 0) > chargeThreshold
+          )));
+
+          // Отображение ключевых выводов
+          insightsList.innerHTML = `
+            <li>Уровень оттока клиентов составляет ${churnRate}%.</li>
+            <li>Штаты с самым высоким оттоком: ${stateChurnData.map(s => s.state).join(', ')}.</li>
+            <li>Клиенты с более чем 4 обращениями в службу поддержки имеют значительно более высокий уровень оттока.</li>
+            <li>Высокие дневные счета (более $50) коррелируют с оттоком в некоторых штатах.</li>
+            ${lowChurnHighChargeState ? `<li><strong>Интересный факт:</strong> Штат ${lowChurnHighChargeState.state} имеет низкий отток (${lowChurnHighChargeState.churnRate}%), несмотря на высокие счета.</li>` : ''}
+          `;
+
+          // Визуализации с Chart.js
+          // Гистограмма уровня оттока
+          new Chart(document.getElementById('churnRateChart'), {
+            type: 'bar',
+            data: {
+              labels: ['Отток', 'Оставшиеся'],
+              datasets: [{
+                label: 'Процент (%)',
+                data: [churnRate, 100 - churnRate],
+                backgroundColor: ['#ff7300', '#82ca9d'],
+                borderColor: ['#ff7300', '#82ca9d'],
+                borderWidth: 1
+              }]
+            },
+            options: {
+              scales: {
+                y: {
+                  beginAtZero: true,
+                  title: {
+                    display: true,
+                    text: 'Процент (%)'
+                  }
+                }
+              },
+              plugins: {
+                legend: {
+                  display: false
+                }
+              }
+            }
+          });
+
+          // Круговая диаграмма оттока по штатам
+          new Chart(document.getElementById('stateChurnChart'), {
+            type: 'pie',
+            data: {
+              labels: stateChurnData.map(s => s.state),
+              datasets: [{
+                label: 'Уровень оттока (%)',
+                data: stateChurnData.map(s => s.churnRate),
+                backgroundColor: ['#ff7300', '#82ca9d', '#8884d8', '#ffc107', '#00bcd4'],
+                borderColor: '#fff',
+                borderWidth: 1
+              }]
+            },
+            options: {
+              plugins: {
+                tooltip: {
+                  callbacks: {
+                    label: (context) => `${context.label}: ${context.raw}%`
+                  }
+                }
+              }
+            }
+          });
+
+          // Диаграмма рассеяния: минуты vs. счета
+          new Chart(document.getElementById('usageVsChargeChart'), {
+            type: 'scatter',
+            data: {
+              datasets: [{
+                label: 'Клиенты',
+                data: usageVsChargeData.map(d => ({ x: d.dayMinutes, y: d.dayCharge })),
+                backgroundColor: usageVsChargeData.map(d => d.churn ? '#ff7300' : '#82ca9d'),
+                pointRadius: 5
+              }]
+            },
+            options: {
+              scales: {
+                x: {
+                  title: {
+                    display: true,
+                    text: 'Дневные минуты'
+                  }
+                },
+                y: {
+                  title: {
+                    display: true,
+                    text: 'Дневной счет ($)'
+                  }
+                }
+              },
+              plugins: {
+                tooltip: {
+                  callbacks: {
+                    label: (context) => `Минуты: ${context.raw.x}, Счет: $${context.raw.y}`
+                  }
+                }
+              }
+            }
+          });
+
+          // Гистограмма: обращения в поддержку vs. отток
+          new Chart(document.getElementById('serviceCallsChart'), {
+            type: 'bar',
+            data: {
+              labels: serviceCallsData.map(s => s.calls),
+              datasets: [{
+                label: 'Уровень оттока (%)',
+                data: serviceCallsData.map(s => s.churnRate),
+                backgroundColor: '#8884d8',
+                borderColor: '#8884d8',
+                borderWidth: 1
+              }]
+            },
+            options: {
+              scales: {
+                x: {
+                  title: {
+                    display: true,
+                    text: 'Количество обращений'
+                  }
+                },
+                y: {
+                  beginAtZero: true,
+                  title: {
+                    display: true,
+                    text: 'Уровень оттока (%)'
+                  }
+                }
+              },
+              plugins: {
+                legend: {
+                  display: false
+                }
+              }
+            }
+          });
+
+          // Рекомендации
+          recommendationsList.innerHTML = `
+            <li><strong>Конкурентные тарифы:</strong> Введите скидки на дневные звонки или пакетные предложения для клиентов с высокими счетами (>$50), чтобы снизить отток.</li>
+            <li><strong>Таргетированный маркетинг:</strong> Сфокусируйтесь на штатах с низким оттоком, таких как ${lowChurnHighChargeState?.state || 'некоторые штаты'}, для рекламных кампаний.</li>
+            <li><strong>Улучшение службы поддержки:</strong> Внедрите тренинги для сотрудников поддержки, чтобы сократить количество обращений (особенно >4), что значительно увеличивает отток.</li>
+            <li><strong>Персонализация тарифов:</strong> Продвигайте голосовую почту для клиентов с высоким количеством сообщений и международные планы для тех, кто активно использует международные звонки.</li>
+          `;
+
+          // Показываем отчет
+          loadingDiv.classList.add('hidden');
+          reportDiv.classList.remove('hidden');
+        } catch (err) {
+          loadingDiv.classList.add('hidden');
+          errorDiv.classList.remove('hidden');
+          errorDiv.textContent = `Ошибка: ${err.message}`;
+        }
+      };
+      reader.readAsText(file);
+    });
+  </script>
+</body>
+</html>
